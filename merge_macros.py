@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - OSRS Anti-Detection with AFK & Zone Awareness (Final Patch)"""
+"""merge_macros.py - OSRS Anti-Detection with AFK & Zone Awareness (Final Patch + Manifest)"""
 
 from pathlib import Path
 import argparse, json, random, re, sys, os, math, shutil
@@ -476,7 +476,7 @@ def add_afk_pause(events, rng, max_allowed_ms):
     return evs, afk_ms
     
 # ==============================================================================
-# SELECTOR & MAIN LOGIC (PATCHED DURATION LOGIC & EXCLUSION)
+# SELECTOR & MAIN LOGIC (PATCHED DURATION LOGIC & EXCLUSION & MANIFEST)
 # ==============================================================================
 
 class NonRepeatingSelector:
@@ -688,19 +688,22 @@ def generate_version_for_folder(files, rng, version_num, exclude_count, within_m
     
     # Construct filename
     parts = []
-    for f in final_files:
-        if f is None: continue
-        part_name = part_from_filename(f)
-        parts.append(part_name)
-        
+    # Create a cleaner filename (no full path details)
     letters = number_to_letters(version_num or 1)
     base_name = f"{letters}_{total_minutes}m_{len(final_files)}files"
     
-    # Create a filename that isn't too long
+    # --- CREATE MANIFEST FILE CONTENT ---
+    # This will be written as a separate .txt file in the output folder
+    manifest_content = f"Merged Version: {base_name}\nTotal Duration: {total_minutes} mins\nFile Count: {len(final_files)}\n\nFiles Used:\n"
+    for i, f in enumerate(final_files):
+        if f:
+            manifest_content += f"{i+1}. {part_from_filename(f)}\n"
+    
     safe_name = ''.join(ch for ch in base_name if ch not in '/\\:*?"<>|')
     excluded = [f for f in regular_files if f not in selected_files]
     
-    return f"{safe_name}.json", merged, [str(p) for p in final_files], pause_info, [str(p) for p in excluded], total_minutes
+    # Return manifest content as an extra item in the tuple
+    return f"{safe_name}.json", merged, [str(p) for p in final_files], pause_info, [str(p) for p in excluded], total_minutes, manifest_content
 
 def main():
     parser = argparse.ArgumentParser()
@@ -755,17 +758,27 @@ def main():
         all_written_paths.extend(always_copied)
         
         for v in range(1, max(1, args.versions) + 1):
-            merged_fname, merged_events, finals, pauses, excluded, total_minutes = generate_version_for_folder(
+            # Unpack the new manifest_content return value
+            merged_fname, merged_events, finals, pauses, excluded, total_minutes, manifest_content = generate_version_for_folder(
                 files, rng, v, args.exclude_count, within_max_s, args.within_max_pauses, 
                 between_max_s, folder, input_root, selector, exemption_config, 
                 target_minutes=args.target_minutes, max_files_per_version=args.max_files
             )
             if not merged_fname: continue
+            
+            # Write the JSON merged file
             out_path = out_folder_for_group / merged_fname
             try:
                 out_path.write_text(json.dumps(merged_events, indent=2, ensure_ascii=False), encoding="utf-8")
                 print(f"  ✓ Version {v}: {merged_fname} ({total_minutes}m)")
                 all_written_paths.append(out_path)
+                
+                # --- WRITE MANIFEST FILE ---
+                # Create a .txt file with the same base name as the json
+                manifest_path = out_folder_for_group / f"{Path(merged_fname).stem}_manifest.txt"
+                manifest_path.write_text(manifest_content, encoding="utf-8")
+                all_written_paths.append(manifest_path)
+                
             except Exception as e:
                 print(f"  ✗ ERROR writing {out_path}: {e}", file=sys.stderr)
                 
