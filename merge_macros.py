@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - OSRS Anti-Detection with AFK & Zone Awareness (Final Patch + Manifest)"""
+"""merge_macros.py - OSRS Anti-Detection with AFK & Zone Awareness (Final Patch + Detailed Manifest)"""
 
 from pathlib import Path
 import argparse, json, random, re, sys, os, math, shutil
@@ -476,7 +476,7 @@ def add_afk_pause(events, rng, max_allowed_ms):
     return evs, afk_ms
     
 # ==============================================================================
-# SELECTOR & MAIN LOGIC (PATCHED DURATION LOGIC & EXCLUSION & MANIFEST)
+# SELECTOR & MAIN LOGIC (PATCHED DURATION LOGIC & EXCLUSION & DETAILED MANIFEST)
 # ==============================================================================
 
 class NonRepeatingSelector:
@@ -489,6 +489,7 @@ class NonRepeatingSelector:
         """
         Selects files until the target duration is reached, reusing files if necessary.
         Prioritizes TIME over file count.
+        Attempts to pick files that fit the remaining time best if possible.
         """
         if not files:
             return []
@@ -514,24 +515,42 @@ class NonRepeatingSelector:
             self.used_files.clear()
             available_pool = list(files)
             
-        # Loop until we hit the target time
-        while estimated_total < target_minutes:
+        # Loop until we hit the target time or overshoot reasonably
+        # Allow a small margin of error (e.g. 10%)
+        while estimated_total < target_minutes * 0.9: 
             if not available_pool:
                 # Refill pool if empty to allow reuse
                 available_pool = list(files)
                 self.rng.shuffle(available_pool)
             
-            # Pick a file
-            chosen = self.rng.choice(available_pool)
-            dur = file_durations.get(chosen, 2.0)
+            # Try to find a file that fits the remaining gap without overshooting too much
+            remaining_gap = target_minutes - estimated_total
+            best_fit = None
             
-            selected.append(chosen)
-            estimated_total += dur + AVG_INTER_FILE_PAUSE_MIN
+            # Filter pool for files that don't drastically overshoot if we are close
+            # If we are far away (> 15 mins), just pick random
+            if remaining_gap < 15:
+                candidates = [f for f in available_pool if file_durations.get(f, 2.0) <= remaining_gap + 5]
+                if candidates:
+                    best_fit = self.rng.choice(candidates)
+                elif available_pool:
+                    # If all candidates overshoot, pick the smallest one available
+                    best_fit = min(available_pool, key=lambda f: file_durations.get(f, 2.0))
             
-            # Mark as used (locally)
-            if chosen in available_pool:
-                available_pool.remove(chosen)
-            self.used_files.add(chosen)
+            if not best_fit and available_pool:
+                best_fit = self.rng.choice(available_pool)
+                
+            if best_fit:
+                dur = file_durations.get(best_fit, 2.0)
+                selected.append(best_fit)
+                estimated_total += dur + AVG_INTER_FILE_PAUSE_MIN
+                
+                # Mark as used (locally)
+                if best_fit in available_pool:
+                    available_pool.remove(best_fit)
+                self.used_files.add(best_fit)
+            else:
+                break # Should not happen if pool refills
             
         print(f"  Selected {len(selected)} files, estimated total: {estimated_total:.1f}m (target: {target_minutes}m)")
         return selected
@@ -544,16 +563,16 @@ class NonRepeatingSelector:
         return shuffled
 
 def generate_version_for_folder(files, rng, version_num, exclude_count, within_max_s, within_max_pauses, between_max_s, folder_path: Path, input_root: Path, selector, exemption_config: dict = None, target_minutes=25, max_files_per_version=4):
-    """Generate merged version with 40% AFK cap and Target Time enforcement."""
+    """Generate merged version with 40% AFK cap, Target Time enforcement, and detailed manifest."""
     if not files:
-        return None, [], [], {"inter_file_pauses": [], "intra_file_pauses": []}, [], 0
+        return None, [], [], {"inter_file_pauses": [], "intra_file_pauses": []}, [], 0, ""
         
     always_first = next((f for f in files if Path(f).name.lower().startswith(("always first", "-always first"))), None)
     always_last = next((f for f in files if Path(f).name.lower().startswith(("always last", "-always last"))), None)
     regular_files = [f for f in files if f not in [always_first, always_last]]
     
     if not regular_files:
-        return None, [], [], {}, [], 0
+        return None, [], [], {}, [], 0, ""
     
     # --- SMART EXCLUSION LOGIC ---
     # If total available files are few (<= 5), adjust exclusion to ensure 
@@ -576,7 +595,7 @@ def generate_version_for_folder(files, rng, version_num, exclude_count, within_m
     
     if not selected_files:
         # Fallback if selection failed
-        return None, [], [], {}, [], 0
+        return None, [], [], {}, [], 0, ""
         
     final_files = selector.shuffle_with_memory(selected_files)
     
@@ -602,6 +621,9 @@ def generate_version_for_folder(files, rng, version_num, exclude_count, within_m
     total_events_duration_so_far = 0
     total_afk_duration_so_far = 0
     
+    # Store detailed file stats for manifest
+    file_stats_list = []
+
     for idx, fpath in enumerate(final_files):
         if fpath is None: continue
         fpath_obj = Path(fpath)
@@ -613,6 +635,9 @@ def generate_version_for_folder(files, rng, version_num, exclude_count, within_m
         # Update event duration accumulator
         total_events_duration_so_far += file_duration_ms
         
+        # Track specific AFK added for THIS file
+        file_added_afk = 0
+
         if not is_special:
             is_desktop = "deskt" in str(folder_path).lower()
             zb_evs = preserve_click_integrity(zb_evs)
@@ -626,6 +651,7 @@ def generate_version_for_folder(files, rng, version_num, exclude_count, within_m
                     budget = calculate_afk_budget(total_events_duration_so_far, total_afk_duration_so_far)
                     zb_evs, added_afk = add_time_of_day_fatigue(zb_evs, rng, is_time_sensitive=False, max_pause_ms=budget)
                     total_afk_duration_so_far += added_afk
+                    file_added_afk += added_afk
             else:
                 zb_evs = add_mouse_jitter(zb_evs, rng, is_desktop=True, target_zones=target_zones, excluded_zones=excluded_zones)
                 zb_evs = add_desktop_mouse_paths(zb_evs, rng)
@@ -634,6 +660,7 @@ def generate_version_for_folder(files, rng, version_num, exclude_count, within_m
                     budget = calculate_afk_budget(total_events_duration_so_far, total_afk_duration_so_far)
                     zb_evs, added_afk = add_time_of_day_fatigue(zb_evs, rng, is_time_sensitive=False, max_pause_ms=budget)
                     total_afk_duration_so_far += added_afk
+                    file_added_afk += added_afk
             
             zb_evs, _ = process_macro_file(zb_evs) # Re-normalize
             
@@ -643,7 +670,9 @@ def generate_version_for_folder(files, rng, version_num, exclude_count, within_m
                 if not exemption_config.get("disable_intra_pauses", False):
                     budget = calculate_afk_budget(total_events_duration_so_far, total_afk_duration_so_far)
                     intra_evs, added_info = insert_intra_pauses(zb_evs, rng, True, within_max_s, within_max_pauses, budget)
-                    total_afk_duration_so_far += sum(p['pause_ms'] for p in added_info)
+                    added_ms = sum(p['pause_ms'] for p in added_info)
+                    total_afk_duration_so_far += added_ms
+                    file_added_afk += added_ms
             else:
                 intra_evs = zb_evs
             
@@ -652,6 +681,7 @@ def generate_version_for_folder(files, rng, version_num, exclude_count, within_m
                 budget = calculate_afk_budget(total_events_duration_so_far, total_afk_duration_so_far)
                 intra_evs, added_afk = add_afk_pause(intra_evs, rng, budget)
                 total_afk_duration_so_far += added_afk
+                file_added_afk += added_afk
         else:
             intra_evs = zb_evs
             
@@ -682,6 +712,11 @@ def generate_version_for_folder(files, rng, version_num, exclude_count, within_m
         else:
             per_file_inter_ms[str(fpath_obj)] = 1000
             time_cursor += 1000
+            
+        # Calculate final individual play time for manifest
+        final_file_duration = file_duration_ms + file_added_afk + pause_ms
+        final_file_mins = round(final_file_duration / 60000.0)
+        file_stats_list.append(f"{part_from_filename(fpath_obj)} (~ {final_file_mins} mins)")
     
     total_ms = time_cursor if merged else 0
     total_minutes = compute_minutes_from_ms(total_ms)
@@ -692,12 +727,11 @@ def generate_version_for_folder(files, rng, version_num, exclude_count, within_m
     letters = number_to_letters(version_num or 1)
     base_name = f"{letters}_{total_minutes}m_{len(final_files)}files"
     
-    # --- CREATE MANIFEST FILE CONTENT ---
+    # --- CREATE DETAILED MANIFEST FILE CONTENT ---
     # This will be written as a separate .txt file in the output folder
-    manifest_content = f"Merged Version: {base_name}\nTotal Duration: {total_minutes} mins\nFile Count: {len(final_files)}\n\nFiles Used:\n"
-    for i, f in enumerate(final_files):
-        if f:
-            manifest_content += f"{i+1}. {part_from_filename(f)}\n"
+    manifest_content = f"Merged Version: {base_name}\nTotal Duration: {total_minutes} mins\nFile Count: {len(final_files)}\nTarget Time: {target_minutes} mins\n\nFiles Used:\n"
+    for i, stat in enumerate(file_stats_list):
+        manifest_content += f"{i+1}. {stat}\n"
     
     safe_name = ''.join(ch for ch in base_name if ch not in '/\\:*?"<>|')
     excluded = [f for f in regular_files if f not in selected_files]
