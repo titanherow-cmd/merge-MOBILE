@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - OSRS Anti-Detection with AFK & Zone Awareness (Strict Exclusion & Global Pool - Fixed Args)"""
+"""merge_macros.py - OSRS Anti-Detection with AFK & Zone Awareness (Individual Manifests)"""
 
 from pathlib import Path
 import argparse, json, random, re, sys, os, math, shutil
@@ -561,15 +561,14 @@ class GlobalFileSelector:
                 
         return selected_for_this_merge
 
-# FIXED: Removed 'selector' from arguments as global_selector is used
 def generate_version_for_folder(rng, version_num, exclude_count, within_max_s, within_max_pauses, between_max_s, folder_path: Path, input_root: Path, global_selector, exemption_config: dict = None, target_minutes=25):
-    """Generate merged version with 40% AFK cap, Target Time enforcement, and detailed manifest."""
+    """Generate merged version with 40% AFK cap, Target Time enforcement, and detailed individual manifest."""
     
     # Use the global selector to get files
     selected_files = global_selector.get_files_for_time(target_minutes)
     
     if not selected_files:
-        return None, [], [], {}, [], 0, ""
+        return None, [], [], {}, [], 0, "", 0.0 
         
     # Get always first/last files separately (they are not managed by selector's pool logic typically, or passed in)
     all_files_in_folder = find_json_files_in_dir(folder_path)
@@ -691,19 +690,27 @@ def generate_version_for_folder(rng, version_num, exclude_count, within_max_s, w
     
     total_ms = time_cursor if merged else 0
     total_minutes = compute_minutes_from_ms(total_ms)
-    
+    total_afk_minutes = round(total_afk_duration_so_far / 60000.0, 1)
+
     parts = []
     letters = number_to_letters(version_num or 1)
     base_name = f"{letters}_{total_minutes}m_{len(final_files)}files"
     
-    manifest_content = f"Merged Version: {base_name}\nTotal Duration: {total_minutes} mins\nFile Count: {len(final_files)}\nTarget Time: {target_minutes} mins\n\nFiles Used:\n"
+    # --- CREATE SINGLE MANIFEST ENTRY CONTENT ---
+    # File Name at top
+    manifest_entry = f"Merged Version: {base_name}\n"
+    manifest_entry += f"Total Duration: {total_minutes} mins\n"
+    manifest_entry += f"Total Pause/AFK Time: {total_afk_minutes} mins\n"
+    manifest_entry += f"File Count: {len(final_files)}\n"
+    manifest_entry += f"Target Time: {target_minutes} mins\n"
+    manifest_entry += "\nFiles Used:\n"
     for i, stat in enumerate(file_stats_list):
-        manifest_content += f"{i+1}. {stat}\n"
+        manifest_entry += f"{i+1}. {stat}\n"
     
     safe_name = ''.join(ch for ch in base_name if ch not in '/\\:*?"<>|')
     excluded = [] 
     
-    return f"{safe_name}.json", merged, [str(p) for p in final_files], pause_info, [str(p) for p in excluded], total_minutes, manifest_content
+    return f"{safe_name}.json", merged, [str(p) for p in final_files], pause_info, [str(p) for p in excluded], total_minutes, manifest_entry, total_afk_minutes
 
 def main():
     parser = argparse.ArgumentParser()
@@ -757,15 +764,12 @@ def main():
         always_copied = copy_always_files_unmodified(files, out_folder_for_group)
         all_written_paths.extend(always_copied)
         
-        # Prepare valid pool for global selector (Exclude always first/last)
         regular_files = [f for f in files if not Path(f).name.lower().startswith(("always first", "always last", "-always first", "-always last"))]
         
-        # Initialize Global Selector ONCE per folder group to track usage across versions
         global_selector = GlobalFileSelector(rng, regular_files)
         
         for v in range(1, max(1, args.versions) + 1):
-            # FIXED CALL: Removed 'selector' argument, passed 'global_selector' correctly
-            merged_fname, merged_events, finals, pauses, excluded, total_minutes, manifest_content = generate_version_for_folder(
+            merged_fname, merged_events, finals, pauses, excluded, total_minutes, manifest_content, afk_total = generate_version_for_folder(
                 rng, v, args.exclude_count, within_max_s, args.within_max_pauses, 
                 between_max_s, folder, input_root, global_selector, exemption_config, 
                 target_minutes=args.target_minutes
@@ -778,13 +782,14 @@ def main():
                 print(f"  ✓ Version {v}: {merged_fname} ({total_minutes}m)")
                 all_written_paths.append(out_path)
                 
+                # --- WRITE INDIVIDUAL MANIFEST FILE ---
                 manifest_path = out_folder_for_group / f"{Path(merged_fname).stem}_manifest.txt"
                 manifest_path.write_text(manifest_content, encoding="utf-8")
                 all_written_paths.append(manifest_path)
                 
             except Exception as e:
                 print(f"  ✗ ERROR writing {out_path}: {e}", file=sys.stderr)
-                
+        
     zip_path = output_parent / f"{output_base_name}.zip"
     with ZipFile(zip_path, "w") as zf:
         for fpath in all_written_paths:
