@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - OSRS Anti-Detection with AFK & Zone Awareness (Fixed Exclusion & Args)"""
+"""merge_macros.py - OSRS Anti-Detection with AFK & Zone Awareness (Fixed Arguments & Simple Exclusion)"""
 
 from pathlib import Path
 import argparse, json, random, re, sys, os, math, shutil
@@ -554,7 +554,7 @@ def generate_version_for_folder(rng, version_num, exclude_count, within_max_s, w
     if not selected_files:
         return None, [], [], {}, [], 0, "", 0.0 
     
-    # 2. Random Exclusion based on exclude_count (Smart Adjustment Logic Restored)
+    # 2. Random Exclusion based on exclude_count (Simple Exclusion Logic Restored)
     
     # Exclude files marked 'always first'/'always last' from random exclusion pool
     always_first_last = [f for f in selected_files if Path(f).name.lower().startswith(("always first", "always last", "-always first", "-always last"))]
@@ -801,6 +801,7 @@ def main():
     folders = find_all_dirs_with_json(args.input_root)
     if not folders:
         print(f"No folders with JSON files found in {args.input_root}", file=sys.stderr)
+        write_counter(COUNTER_PATH, bundle_n) # Ensure counter is written back even if no folders
         return
         
     print(f"Found {len(folders)} macro groups.")
