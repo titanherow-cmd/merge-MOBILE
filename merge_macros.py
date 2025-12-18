@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - Fixed NameError, Restored Folder Tree, and Added Manifests"""
+"""merge_macros.py - Simplified filenames and AFK time tracking in manifest"""
 
 from pathlib import Path
 import argparse, json, random, re, sys, os, math, shutil
@@ -28,7 +28,6 @@ def is_time_sensitive_folder(folder_path: Path) -> bool:
 def find_all_dirs_with_json(input_root: Path):
     found = []
     if not input_root.exists(): return found
-    # Find directories that contain at least one JSON file
     for p in sorted(input_root.rglob("*")):
         if p.is_dir():
             if any(child.suffix.lower() == ".json" for child in p.iterdir() if child.is_file()):
@@ -36,7 +35,6 @@ def find_all_dirs_with_json(input_root: Path):
     return found
 
 def find_json_files_in_dir(dirpath: Path):
-    # Exclude helper files or click zone configurations
     return sorted([p for p in dirpath.glob("*.json") if p.is_file() and "click_zones" not in p.name])
 
 def load_json_events(path: Path):
@@ -161,8 +159,8 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min, inter_
     ))
 
     all_evs = []
-    parts_info = []
     manifest_lines = []
+    total_pause_ms = 0
     is_time_sensitive = is_time_sensitive_folder(folder)
     
     for i, path_str in enumerate(selected_paths):
@@ -180,21 +178,27 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min, inter_
         pause = 0
         if i > 0:
             pause = rng.randint(100, 800) if is_time_sensitive else rng.randint(500, inter_pause_max * 1000)
+            total_pause_ms += pause
                 
         all_evs = merge_events_with_pauses(all_evs, evs, pause)
         letter = number_to_letters(i+1)
-        parts_info.append(f"{letter}[{p.stem}]")
         manifest_lines.append(f"  {letter}: {p.name}")
     
     if not all_evs: return None, None, None
     
     final_min = int(all_evs[-1]['Time'] / 60000)
+    afk_min = round(total_pause_ms / 60000, 2)
     v_code = number_to_letters(v_num)
-    parts_str = " - ".join(parts_info)
-    clean_folder = folder.name.replace(" ", "").replace("-", "")
-    fname = f"{clean_folder}_{v_code}_{final_min}m={parts_str}.json"
     
-    manifest_entry = f"FILENAME: {fname}\nDURATION: {final_min} minutes\nCOMPONENTS:\n" + "\n".join(manifest_lines) + "\n" + "-"*30
+    # Simplified filename as requested
+    fname = f"{v_code}_{final_min}m.json"
+    
+    manifest_entry = (
+        f"FILENAME: {fname}\n"
+        f"TOTAL DURATION: {final_min} minutes\n"
+        f"TOTAL AFK TIME: {afk_min} minutes\n"
+        f"COMPONENTS:\n" + "\n".join(manifest_lines) + "\n" + "-"*30
+    )
     
     return fname, all_evs, manifest_entry
 
@@ -222,7 +226,6 @@ def main():
         files = find_json_files_in_dir(folder)
         if not files: continue
         
-        # PRESERVE FOLDER TREE: Calculate relative path from input root
         rel_path = folder.relative_to(args.input_root)
         out_folder = bundle_dir / rel_path
         out_folder.mkdir(parents=True, exist_ok=True)
@@ -241,7 +244,6 @@ def main():
                 (out_folder / fname).write_text(json.dumps(evs, indent=2), encoding="utf-8")
                 folder_manifest.append(m_entry)
         
-        # Write the time manifest for this folder
         if len(folder_manifest) > 1:
             (out_folder / "manifest.txt").write_text("\n\n".join(folder_manifest), encoding="utf-8")
                 
