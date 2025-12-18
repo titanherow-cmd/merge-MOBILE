@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - Advanced Pause Logic (Probabilistic Intra-file & Fixed Inter-file)"""
+"""merge_macros.py - Advanced Pause Logic (Updated Probability Table & Fixed Inter-file)"""
 
 from pathlib import Path
 import argparse, json, random, re, sys, os, math, shutil
@@ -94,14 +94,14 @@ def number_to_letters(n: int) -> str:
 
 def apply_intra_file_pauses(events, rng):
     """
-    Implements internal pauses based on probability weights:
-    0% (40% chance), 4% (15%), 9% (15%), 16% (15%), 25% (10%), 31% (5%)
+    Implements internal pauses based on updated probability weights:
+    0% (40% chance), 8% (20%), 15% (15%), 21% (10%), 25.5% (10%), 29% (5%)
     """
     if not events: return events
     
-    # Probability roll
-    choices = [0, 4, 9, 16, 25, 31]
-    weights = [40, 15, 15, 15, 10, 5]
+    # Updated Probability Table
+    choices = [0, 8, 15, 21, 25.5, 29]
+    weights = [40, 20, 15, 10, 10, 5]
     pct = rng.choices(choices, weights=weights, k=1)[0]
     
     if pct == 0:
@@ -129,9 +129,8 @@ def apply_intra_file_pauses(events, rng):
         # Pick a random injection point (not at the very start/end)
         idx = rng.randint(1, len(modified_events) - 2)
         
-        # Ensure we aren't splitting a Click-Down/Up pair
         # Add the pause_amt + a random MS jitter to ensure it's NEVER a whole number
-        jitter = rng.randint(1, 49) # ensures result ends in .1 to .49 ms essentially
+        jitter = rng.randint(1, 49) 
         actual_pause = pause_amt + jitter
         
         for i in range(idx, len(modified_events)):
@@ -241,7 +240,7 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min):
         # 1. Preserve Clicks
         evs = preserve_click_integrity(raw_evs)
         
-        # 2. Apply Intra-file Internal Pauses (New Probability Rule)
+        # 2. Apply Intra-file Internal Pauses (Updated Probability Rule)
         if not is_special:
             evs = apply_intra_file_pauses(evs, rng)
             evs = add_mouse_jitter(evs, rng)
@@ -251,7 +250,6 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min):
         inter_pause = 0
         if i > 0:
             inter_pause = rng.randint(100, 500)
-            # Add micro-jitter to ensure it's not a round number
             inter_pause += rng.randint(1, 9) 
             total_pause_ms += inter_pause
                 
@@ -259,7 +257,6 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min):
         all_evs = merge_events_with_pauses(all_evs, evs, inter_pause)
         
         letter = number_to_letters(i+1)
-        # Calculate resulting duration of this specific processed segment
         seg_dur = evs[-1]['Time'] - evs[0]['Time']
         manifest_lines.append(f"  {letter}: {p.name} ({format_ms_precise(seg_dur)})")
     
@@ -288,7 +285,6 @@ def main():
     parser.add_argument("output_root", type=Path)
     parser.add_argument("--versions", type=int, default=6)
     parser.add_argument("--target-minutes", type=int, default=25)
-    # legacy args ignored but kept for CLI compatibility
     parser.add_argument("--between-max-time", type=int, default=0)
     parser.add_argument("--exclude-count", type=int, default=0) 
     args = parser.parse_args()
