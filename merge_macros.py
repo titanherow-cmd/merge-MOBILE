@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - Precise duration matching and Round-Robin Queue Logic"""
+"""merge_macros.py - Precise duration matching, Round-Robin Queue Logic, and Detailed Manifests"""
 
 from pathlib import Path
 import argparse, json, random, re, sys, os, math, shutil
@@ -55,6 +55,13 @@ def get_file_duration_ms(path: Path) -> int:
         times = [int(e.get("Time", 0)) for e in events]
         return max(times) - min(times)
     except: return 0
+
+def format_ms(ms: int) -> str:
+    """Formats milliseconds into (Xmin Ysec) string."""
+    total_seconds = int(ms / 1000)
+    minutes = total_seconds // 60
+    seconds = total_seconds % 60
+    return f"({minutes}min {seconds}sec)"
 
 def process_macro_file(events: list[dict]) -> tuple[list[dict], int]:
     if not events: return [], 0
@@ -196,6 +203,7 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min, inter_
         p = Path(path_str)
         is_special = SPECIAL_KEYWORD in p.name.lower() or p.name.lower() == SPECIAL_FILENAME
         
+        file_dur_ms = get_file_duration_ms(p)
         raw_evs, _ = process_macro_file(load_json_events(p))
         if not raw_evs: continue
         
@@ -211,7 +219,10 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min, inter_
                 
         all_evs = merge_events_with_pauses(all_evs, evs, pause)
         letter = number_to_letters(i+1)
-        manifest_lines.append(f"  {letter}: {p.name}")
+        
+        # Format the individual duration for the manifest
+        dur_str = format_ms(file_dur_ms)
+        manifest_lines.append(f"  {letter}: {p.name} {dur_str}")
     
     if not all_evs: return None, None, None
     
