@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - Simplified filenames and AFK time tracking in manifest"""
+"""merge_macros.py - Precise duration matching and Round-Robin Queue Logic"""
 
 from pathlib import Path
 import argparse, json, random, re, sys, os, math, shutil
@@ -46,6 +46,15 @@ def load_json_events(path: Path):
             return [data] if "Time" in data else []
         return deepcopy(data) if isinstance(data, list) else []
     except: return []
+
+def get_file_duration_ms(path: Path) -> int:
+    """Helper to quickly get the duration of a macro file."""
+    events = load_json_events(path)
+    if not events: return 0
+    try:
+        times = [int(e.get("Time", 0)) for e in events]
+        return max(times) - min(times)
+    except: return 0
 
 def process_macro_file(events: list[dict]) -> tuple[list[dict], int]:
     if not events: return [], 0
@@ -123,26 +132,42 @@ class QueueFileSelector:
         self.pool = list(self.all_files)
         self.rng.shuffle(self.pool)
         
-    def get_files_for_time(self, target_minutes):
+    def get_files_for_time(self, target_minutes, inter_pause_avg_ms):
         selected = []
-        current_mins = 0.0
-        while current_mins < target_minutes:
+        current_ms = 0.0
+        target_ms = target_minutes * 60000
+        
+        while current_ms < target_ms:
             if not self.pool:
                 self.pool = list(self.all_files)
                 self.rng.shuffle(self.pool)
             
+            # Find next in queue not in current selection
             pick = None
             for f in self.pool:
                 if f not in selected:
                     pick = f
                     break
             
+            # If every file is already in 'selected' but we haven't hit target time,
+            # we must repeat files (moving through the queue again).
             if not pick: pick = self.pool[0]
             
+            dur = get_file_duration_ms(Path(pick))
+            # If a file is broken/empty, skip to avoid infinite loop
+            if dur <= 0 and len(self.all_files) > 1:
+                if pick in self.pool: self.pool.remove(pick)
+                continue
+
             selected.append(pick)
             if pick in self.pool: self.pool.remove(pick)
-            current_mins += 2.5 
-            if len(selected) > 60: break
+            
+            # Accumulate duration + estimated pause
+            current_ms += dur + inter_pause_avg_ms
+            
+            # Hard safety break (100 macros) to prevent crashes on extremely tiny files
+            if len(selected) > 100: break 
+            
         return selected
 
 # ==============================================================================
@@ -150,9 +175,14 @@ class QueueFileSelector:
 # ==============================================================================
 
 def generate_version_for_folder(rng, v_num, folder, selector, target_min, inter_pause_max):
-    selected_paths = selector.get_files_for_time(target_min)
+    # Estimate average pause for the selector's time math
+    is_time_sensitive = is_time_sensitive_folder(folder)
+    avg_pause_ms = 450 if is_time_sensitive else (inter_pause_max * 1000) / 2
+    
+    selected_paths = selector.get_files_for_time(target_min, avg_pause_ms)
     if not selected_paths: return None, None, None
     
+    # Sort: Always First -> Regular -> Always Last
     selected_paths.sort(key=lambda x: (
         0 if "always first" in Path(x).name.lower() else 
         2 if "always last" in Path(x).name.lower() else 1
@@ -161,7 +191,6 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min, inter_
     all_evs = []
     manifest_lines = []
     total_pause_ms = 0
-    is_time_sensitive = is_time_sensitive_folder(folder)
     
     for i, path_str in enumerate(selected_paths):
         p = Path(path_str)
@@ -190,7 +219,6 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min, inter_
     afk_min = round(total_pause_ms / 60000, 2)
     v_code = number_to_letters(v_num)
     
-    # Simplified filename as requested
     fname = f"{v_code}_{final_min}m.json"
     
     manifest_entry = (
