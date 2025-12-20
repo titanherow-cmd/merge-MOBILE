@@ -1,84 +1,22 @@
-name: Merge macros (persisted counter, scan all folders, zip top-level)
+name: Merge Macro Bundleon:workflow_dispatch:inputs:target_minutes:description: 'Target duration (minutes)'required: truedefault: '25'versions_per_folder:description: 'Versions per folder'required: truedefault: '6'delay_before_action_ms:description: 'Delay Before Action MS (0 to disable)'required: truedefault: '10'jobs:merge-macros:runs-on: ubuntu-lateststeps:- name: Checkout codeuses: actions/checkout@v4with:fetch-depth: 0  - name: Set up Python
+    uses: actions/setup-python@v4
+    with:
+      python-version: '3.x'
 
-on:
-  workflow_dispatch:
-    inputs:
-      versions:
-        description: 'How many versions per group'
-        required: true
-        default: '6'
-      between_max_time:
-        description: 'Inter-file max pause time (seconds)'
-        required: true
-        default: '18'
-      target_minutes:
-        description: 'Target duration per merged file (uses round-robin queue)'
-        required: true
-        default: '25'
-      delay_before_action_ms:
-        description: 'Delay Before Action (MS) - Inserts random gaps (0 to disable)'
-        required: true
-        default: '0'
+  - name: Run Merge Script
+    run: |
+      python3 merge_macros.py \
+        "input_macros" \
+        "output_bundles" \
+        --target-minutes ${{ github.event.inputs.target_minutes }} \
+        --versions ${{ github.event.inputs.versions_per_folder }} \
+        --delay-before-action-ms ${{ github.event.inputs.delay_before_action_ms }}
 
-permissions:
-  contents: write
-
-jobs:
-  merge:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-          
-      - name: Get current BUNDLE_SEQ
-        id: seq
-        run: |
-          if [ -f .github/merge_bundle_counter.txt ]; then
-            VAL=$(cat .github/merge_bundle_counter.txt)
-          else
-            VAL=1
-          fi
-          echo "BUNDLE_SEQ=$VAL" >> "$GITHUB_ENV"
-        
-      - name: Execute macro merge script
-        run: |
-          mkdir -p output
-          python merge_macros.py \
-            --versions ${{ github.event.inputs.versions }} \
-            --between-max-time '${{ github.event.inputs.between_max_time }}' \
-            --target-minutes ${{ github.event.inputs.target_minutes }} \
-            --delay-before-action-ms ${{ github.event.inputs.delay_before_action_ms }} \
-            originals output
-            
-      - name: Commit and Push Counter Update
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add .github/merge_bundle_counter.txt || true
-          git commit -m "Increment bundle counter" || echo "No changes"
-          git push || echo "Push failed"
-            
-      - name: Create ZIP artifact
-        id: zip_step
-        run: |
-          BUNDLE_NAME="merged_bundle_${{ env.BUNDLE_SEQ }}"
-          ZIP_FILE="merged_macros_${{ env.BUNDLE_SEQ }}.zip"
-          if [ -d "output/$BUNDLE_NAME" ]; then
-            (cd output && zip -r "../$ZIP_FILE" "$BUNDLE_NAME")
-          else
-            echo "No output found" > empty.txt && zip "$ZIP_FILE" empty.txt
-          fi
-          echo "FINAL_ZIP=$ZIP_FILE" >> "$GITHUB_ENV"
-
-      - name: Upload merged ZIP artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: merged_macros_bundle_${{ env.BUNDLE_SEQ }}
-          path: ${{ env.FINAL_ZIP }}
+  - name: Commit and Push changes
+    run: |
+      git config --global user.name "github-actions[bot]"
+      git config --global user.email "github-actions[bot]@users.noreply.github.com"
+      git add .github/merge_bundle_counter.txt
+      git add output_bundles/
+      git commit -m "Generated Merge Bundle #$(cat .github/merge_bundle_counter.txt)" || echo "No changes to commit"
+      git push
