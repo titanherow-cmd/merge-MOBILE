@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - Advanced Pause Logic (Updated Probability Table & Fixed Inter-file)"""
+"""merge_macros.py - Advanced Pause Logic with Running Total in Manifest"""
 
 from pathlib import Path
 import argparse, json, random, re, sys, os, math, shutil
@@ -99,7 +99,6 @@ def apply_intra_file_pauses(events, rng):
     """
     if not events: return events
     
-    # Updated Probability Table
     choices = [0, 8, 15, 21, 25.5, 29]
     weights = [40, 20, 15, 10, 10, 5]
     pct = rng.choices(choices, weights=weights, k=1)[0]
@@ -113,7 +112,6 @@ def apply_intra_file_pauses(events, rng):
     if total_pause_needed <= 0:
         return events
 
-    # Divide total pause into 3-6 random chunks
     num_chunks = rng.randint(3, 6)
     chunk_sizes = []
     remaining = total_pause_needed
@@ -123,13 +121,9 @@ def apply_intra_file_pauses(events, rng):
         remaining -= c
     chunk_sizes.append(remaining)
 
-    # Intersperse chunks into the event list (avoiding Protected click sequences)
     modified_events = deepcopy(events)
     for pause_amt in chunk_sizes:
-        # Pick a random injection point (not at the very start/end)
         idx = rng.randint(1, len(modified_events) - 2)
-        
-        # Add the pause_amt + a random MS jitter to ensure it's NEVER a whole number
         jitter = rng.randint(1, 49) 
         actual_pause = pause_amt + jitter
         
@@ -156,7 +150,6 @@ def add_reaction_variance(events, rng):
     for e in events:
         ne = deepcopy(e)
         if not e.get('PROTECTED') and rng.random() < 0.15:
-            # Add random MS offset, ensuring it's not a round number
             offset += rng.randint(-30, 30) + (rng.random() * 2 - 1)
         ne['Time'] = max(0, int(e.get('Time', 0)) + int(offset))
         varied.append(ne)
@@ -207,7 +200,7 @@ class QueueFileSelector:
             selected.append(pick)
             if pick in self.pool: self.pool.remove(pick)
             
-            # Use 15% as a conservative average internal pause + 300ms inter-file pause for target calculation
+            # Use 15% as a conservative estimate for target calculation
             current_ms += (dur * 1.15) + 300
             if len(selected) > 100: break 
             
@@ -237,28 +230,28 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min):
         raw_evs, _ = process_macro_file(load_json_events(p))
         if not raw_evs: continue
         
-        # 1. Preserve Clicks
         evs = preserve_click_integrity(raw_evs)
-        
-        # 2. Apply Intra-file Internal Pauses (Updated Probability Rule)
         if not is_special:
             evs = apply_intra_file_pauses(evs, rng)
             evs = add_mouse_jitter(evs, rng)
             evs = add_reaction_variance(evs, rng)
         
-        # 3. Inter-file Pause (Rule: 100ms - 500ms, non-whole jitter)
         inter_pause = 0
         if i > 0:
             inter_pause = rng.randint(100, 500)
             inter_pause += rng.randint(1, 9) 
             total_pause_ms += inter_pause
                 
-        # 4. Merge
         all_evs = merge_events_with_pauses(all_evs, evs, inter_pause)
         
+        # Manifest Calculations
         letter = number_to_letters(i+1)
         seg_dur = evs[-1]['Time'] - evs[0]['Time']
-        manifest_lines.append(f"  {letter}: {p.name} ({format_ms_precise(seg_dur)})")
+        running_total_ms = all_evs[-1]['Time']
+        
+        manifest_lines.append(
+            f"  {letter}: {p.name} | Duration: {format_ms_precise(seg_dur)} | Running Total: {format_ms_precise(running_total_ms)}"
+        )
     
     if not all_evs: return None, None, None
     
@@ -274,7 +267,7 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min):
         f"FILENAME: {fname}\n"
         f"TOTAL DURATION: {total_dur_str}\n"
         f"TOTAL INTER-FILE AFK: {afk_dur_str}\n"
-        f"COMPONENTS (Includes Internal Random Pauses):\n" + "\n".join(manifest_lines) + "\n" + "-"*30
+        f"COMPONENTS (Includes Internal Random Pauses):\n" + "\n".join(manifest_lines) + "\n" + "-"*40
     )
     
     return fname, all_evs, manifest_entry
