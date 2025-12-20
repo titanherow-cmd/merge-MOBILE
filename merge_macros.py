@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - Advanced Pause Logic with Delay-Before-Action and Detailed AFK Tracking"""
+"""merge_macros.py - Advanced Pause Logic with Jittered Delay-Before-Action (-18/+19ms)"""
 
 from pathlib import Path
 import argparse, json, random, re, sys, os, math, shutil
@@ -95,7 +95,7 @@ def number_to_letters(n: int) -> str:
 def apply_delay_before_action(events, delay_ms, rng):
     """
     Calculates a pool (20-30% of duration) and inserts delay_ms chunks
-    randomly before actions.
+    randomly before actions. Applies -18ms to +19ms jitter to each chunk.
     """
     if delay_ms <= 0 or not events: return events, 0
     
@@ -104,18 +104,21 @@ def apply_delay_before_action(events, delay_ms, rng):
     pool_pct = rng.uniform(20, 30)
     total_delay_pool = int(original_duration * (pool_pct / 100))
     
+    # Estimate insertions based on the base delay_ms
     num_insertions = total_delay_pool // delay_ms
     if num_insertions <= 0: return events, 0
     
     modified_events = deepcopy(events)
     total_added = 0
     
-    # Try to insert 'delay_ms' chunks num_insertions times
     for _ in range(num_insertions):
         idx = rng.randint(1, len(modified_events) - 1)
-        # Add jitter to ensure non-whole numbers
-        jitter = rng.randint(1, 49)
+        # Apply the specific -18 to +19 jitter logic
+        jitter = rng.randint(-18, 19)
         actual_chunk = delay_ms + jitter
+        
+        # Ensure we don't accidentally create a negative time shift (safety check)
+        if actual_chunk < 0: actual_chunk = 0
         
         for i in range(idx, len(modified_events)):
             modified_events[i]['Time'] += actual_chunk
@@ -124,10 +127,6 @@ def apply_delay_before_action(events, delay_ms, rng):
     return modified_events, total_added
 
 def apply_intra_file_pauses(events, rng):
-    """
-    Implements internal pauses based on updated probability weights.
-    Returns (modified_events, total_added_ms)
-    """
     if not events: return events, 0
     
     choices = [0, 8, 15, 21, 25.5, 29]
@@ -157,6 +156,7 @@ def apply_intra_file_pauses(events, rng):
     
     for pause_amt in chunk_sizes:
         idx = rng.randint(1, len(modified_events) - 2)
+        # Standard jitter for probability pauses
         jitter = rng.randint(1, 49) 
         actual_pause = pause_amt + jitter
         actual_added_ms += actual_pause
@@ -234,8 +234,8 @@ class QueueFileSelector:
             selected.append(pick)
             if pick in self.pool: self.pool.remove(pick)
             
-            # Use 40% (high estimate) for target calculation to avoid overshooting
-            current_ms += (dur * 1.40) + 300
+            # Use 45% as safe upper bound for target calculation (Inc. new delays)
+            current_ms += (dur * 1.45) + 300
             if len(selected) > 100: break 
             
         return selected
@@ -270,9 +270,8 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min, delay_
         added_delay_ms = 0
         
         if not is_special:
-            # Apply Intra-file Probability Pauses
             evs, added_internal_ms = apply_intra_file_pauses(evs, rng)
-            # Apply Delay-Before-Action (20-30% pool)
+            # Use the new jittered delay logic
             evs, added_delay_ms = apply_delay_before_action(evs, delay_before_ms, rng)
             
             evs = add_mouse_jitter(evs, rng)
@@ -288,13 +287,12 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min, delay_
                 
         all_evs = merge_events_with_pauses(all_evs, evs, inter_pause)
         
-        # Manifest Calculations
         letter = number_to_letters(i+1)
         seg_dur = evs[-1]['Time'] - evs[0]['Time']
         running_total_ms = all_evs[-1]['Time']
         
         manifest_lines.append(
-            f"  {letter}: {p.name} | Dur: {format_ms_precise(seg_dur)} (Inc. {format_ms_precise(added_internal_ms + added_delay_ms)} Pause/Delay) | Total: {format_ms_precise(running_total_ms)}"
+            f"  {letter}: {p.name} | Dur: {format_ms_precise(seg_dur)} (Inc. {format_ms_precise(added_internal_ms + added_delay_ms)} Random Gaps) | Total: {format_ms_precise(running_total_ms)}"
         )
     
     if not all_evs: return None, None, None
@@ -310,7 +308,7 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min, delay_
         f"FILENAME: {fname}\n"
         f"TOTAL DURATION: {total_dur_str}\n"
         f"TOTAL COMBINED AFK: {format_ms_precise(total_inter_pause_ms + total_internal_pause_ms)}\n"
-        f"  ├─ Internal/Delay pauses: {format_ms_precise(total_internal_pause_ms)}\n"
+        f"  ├─ Internal delays/pauses: {format_ms_precise(total_internal_pause_ms)}\n"
         f"  └─ Inter-file gaps: {format_ms_precise(total_inter_pause_ms)}\n"
         f"COMPONENTS:\n" + "\n".join(manifest_lines) + "\n" + "-"*40
     )
