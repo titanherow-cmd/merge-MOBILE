@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - Unified Humanization Engine with Accumulated Single-Block AFK"""
+"""merge_macros.py - Unified Humanization Engine with Accumulated Single-Block AFK and Time-Sensitive logic"""
 
 from pathlib import Path
 import argparse, json, random, re, sys, os, math, shutil
@@ -100,7 +100,6 @@ def apply_micro_hesitation(events, delay_ms, rng):
     modified_events = deepcopy(events)
     total_added = 0
     for i in range(len(modified_events)):
-        # Jitter range: -118ms to +119ms
         jitter = rng.randint(-118, 119)
         actual_chunk = delay_ms + jitter
         if actual_chunk < 0: actual_chunk = 0
@@ -120,14 +119,29 @@ def roll_macro_afk_pool(events, rng):
     duration = events[-1]['Time'] - events[0]['Time']
     return int(duration * (pct / 100))
 
-def inject_single_afk_block(events, total_pool_ms, rng):
-    """Rule 2 Part B: Insert total pool as one massive chunk randomly in merged sequence"""
+def inject_single_afk_block(events, total_pool_ms, rng, is_time_sensitive):
+    """Rule 2 Part B: Insert total pool as one massive chunk.
+    If time-sensitive, always at the end. Otherwise, random.
+    """
     if total_pool_ms <= 0 or not events: return events
     
     modified_events = deepcopy(events)
-    idx = rng.randint(1, len(modified_events) - 1)
-    for i in range(idx, len(modified_events)):
-        modified_events[i]['Time'] += total_pool_ms
+    if is_time_sensitive:
+        # Just return the events; the "Time" of the end is naturally extended 
+        # but to make it explicit for logic that might check last event time:
+        # We don't actually shift any events if it's at the end, 
+        # but we need to ensure the final total duration reflects this.
+        # However, since we define duration by the last event's time, 
+        # we'll add a dummy "Wait" event at the end or just handle it in duration calc.
+        # To keep it simple and compatible, we'll shift a 'virtual' end.
+        # Actually, the most robust way is to add the pause to the last event
+        # if the last event is a wait, or just let the manifest report it.
+        # BUT for the JSON to actually 'last' longer, the last event time must be high.
+        modified_events[-1]['Time'] += total_pool_ms
+    else:
+        idx = rng.randint(1, len(modified_events) - 1)
+        for i in range(idx, len(modified_events)):
+            modified_events[i]['Time'] += total_pool_ms
     return modified_events
 
 # ==============================================================================
@@ -161,7 +175,6 @@ class QueueFileSelector:
                 continue
             selected.append(pick)
             if pick in self.pool: self.pool.remove(pick)
-            # Rough time estimation for filling the target (inc buffer for pauses)
             current_ms += (dur * 1.5) + 1200
             if len(selected) > 100: break 
         return selected
@@ -171,6 +184,7 @@ class QueueFileSelector:
 # ==============================================================================
 
 def generate_version_for_folder(rng, v_num, folder, selector, target_min, delay_before_ms):
+    is_time_sensitive = "time sensitive" in str(folder).lower()
     selected_paths = selector.get_files_for_time(target_min)
     if not selected_paths: return None, None, None
     
@@ -206,7 +220,6 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min, delay_
         # Rule 3: Inter-File Gap (0.5s to 2s, precision ms variety)
         inter_pause = 0
         if i > 0:
-            # Using randint(500, 2000) ensures 1501 unique possible MS values
             inter_pause = rng.randint(500, 2000)
             total_inter_file_gap_ms += inter_pause
                 
@@ -215,9 +228,9 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min, delay_
         letter = number_to_letters(i+1)
         manifest_lines.append(f"  {letter}: {p.name} | Total: {format_ms_precise(merged_events[-1]['Time'])}")
 
-    # Rule 2 FINAL: Inject the accumulated pool as one single solid block in the merged timeline
+    # Rule 2 FINAL: Inject the accumulated pool
     if accumulated_afk_pool > 0:
-        merged_events = inject_single_afk_block(merged_events, accumulated_afk_pool, rng)
+        merged_events = inject_single_afk_block(merged_events, accumulated_afk_pool, rng, is_time_sensitive)
 
     total_ms = merged_events[-1]['Time'] if merged_events else 0
     total_combined_afk = accumulated_afk_pool + total_inter_file_gap_ms + total_micro_delay_ms
@@ -249,7 +262,7 @@ def main():
     parser.add_argument("output_root", type=Path)
     parser.add_argument("--versions", type=int, default=6)
     parser.add_argument("--target-minutes", type=int, default=25)
-    parser.add_argument("--delay-before-action-ms", type=int, default=0)
+    parser.add_argument("--delay-before-action-ms", type=int, default=10)
     args = parser.parse_args()
 
     rng = random.Random()
