@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - Advanced Pause Logic with Running Total in Manifest"""
+"""merge_macros.py - Advanced Pause Logic with Detailed AFK Tracking in Manifest"""
 
 from pathlib import Path
 import argparse, json, random, re, sys, os, math, shutil
@@ -94,23 +94,23 @@ def number_to_letters(n: int) -> str:
 
 def apply_intra_file_pauses(events, rng):
     """
-    Implements internal pauses based on updated probability weights:
-    0% (40% chance), 8% (20%), 15% (15%), 21% (10%), 25.5% (10%), 29% (5%)
+    Implements internal pauses based on updated probability weights.
+    Returns (modified_events, total_added_ms)
     """
-    if not events: return events
+    if not events: return events, 0
     
     choices = [0, 8, 15, 21, 25.5, 29]
     weights = [40, 20, 15, 10, 10, 5]
     pct = rng.choices(choices, weights=weights, k=1)[0]
     
     if pct == 0:
-        return events
+        return events, 0
 
     original_duration = events[-1]['Time'] - events[0]['Time']
     total_pause_needed = int(original_duration * (pct / 100))
     
     if total_pause_needed <= 0:
-        return events
+        return events, 0
 
     num_chunks = rng.randint(3, 6)
     chunk_sizes = []
@@ -122,15 +122,18 @@ def apply_intra_file_pauses(events, rng):
     chunk_sizes.append(remaining)
 
     modified_events = deepcopy(events)
+    actual_added_ms = 0
+    
     for pause_amt in chunk_sizes:
         idx = rng.randint(1, len(modified_events) - 2)
         jitter = rng.randint(1, 49) 
         actual_pause = pause_amt + jitter
+        actual_added_ms += actual_pause
         
         for i in range(idx, len(modified_events)):
             modified_events[i]['Time'] += actual_pause
             
-    return modified_events
+    return modified_events, actual_added_ms
 
 def add_mouse_jitter(events, rng):
     jittered = []
@@ -221,7 +224,8 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min):
 
     all_evs = []
     manifest_lines = []
-    total_pause_ms = 0
+    total_inter_pause_ms = 0
+    total_internal_pause_ms = 0
     
     for i, path_str in enumerate(selected_paths):
         p = Path(path_str)
@@ -231,16 +235,20 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min):
         if not raw_evs: continue
         
         evs = preserve_click_integrity(raw_evs)
+        added_internal_ms = 0
+        
         if not is_special:
-            evs = apply_intra_file_pauses(evs, rng)
+            evs, added_internal_ms = apply_intra_file_pauses(evs, rng)
             evs = add_mouse_jitter(evs, rng)
             evs = add_reaction_variance(evs, rng)
+        
+        total_internal_pause_ms += added_internal_ms
         
         inter_pause = 0
         if i > 0:
             inter_pause = rng.randint(100, 500)
             inter_pause += rng.randint(1, 9) 
-            total_pause_ms += inter_pause
+            total_inter_pause_ms += inter_pause
                 
         all_evs = merge_events_with_pauses(all_evs, evs, inter_pause)
         
@@ -250,14 +258,13 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min):
         running_total_ms = all_evs[-1]['Time']
         
         manifest_lines.append(
-            f"  {letter}: {p.name} | Duration: {format_ms_precise(seg_dur)} | Running Total: {format_ms_precise(running_total_ms)}"
+            f"  {letter}: {p.name} | Dur: {format_ms_precise(seg_dur)} (Inc. {format_ms_precise(added_internal_ms)} Pause) | Total: {format_ms_precise(running_total_ms)}"
         )
     
     if not all_evs: return None, None, None
     
     total_ms = all_evs[-1]['Time'] if all_evs else 0
     total_dur_str = format_ms_precise(total_ms)
-    afk_dur_str = format_ms_precise(total_pause_ms)
     
     v_code = number_to_letters(v_num)
     final_min_only = int(total_ms / 60000)
@@ -266,8 +273,10 @@ def generate_version_for_folder(rng, v_num, folder, selector, target_min):
     manifest_entry = (
         f"FILENAME: {fname}\n"
         f"TOTAL DURATION: {total_dur_str}\n"
-        f"TOTAL INTER-FILE AFK: {afk_dur_str}\n"
-        f"COMPONENTS (Includes Internal Random Pauses):\n" + "\n".join(manifest_lines) + "\n" + "-"*40
+        f"TOTAL COMBINED AFK: {format_ms_precise(total_inter_pause_ms + total_internal_pause_ms)}\n"
+        f"  └─ Internal file pauses: {format_ms_precise(total_internal_pause_ms)}\n"
+        f"  └─ Inter-file gaps: {format_ms_precise(total_inter_pause_ms)}\n"
+        f"COMPONENTS:\n" + "\n".join(manifest_lines) + "\n" + "-"*40
     )
     
     return fname, all_evs, manifest_entry
