@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""merge_macros.py - Robust File Discovery with Manifests and AFK Tracking"""
+"""merge_macros.py - Robust File Discovery with Accurate Manifest Timings"""
 
 from pathlib import Path
 import argparse, json, random, sys, os, math
@@ -55,13 +55,11 @@ class QueueFileSelector:
                 self.pool = list(self.all_files)
                 self.rng.shuffle(self.pool)
             
-            # Pick next file that isn't already in this specific version if possible
             pick = next((f for f in self.pool if f not in selected), self.pool[0])
             dur = get_file_duration_ms(Path(pick))
             selected.append(pick)
             if pick in self.pool: self.pool.remove(pick)
             
-            # Estimate: Duration + gaps
             current_ms += (dur * 1.3) + 1500
             if len(selected) > 150: break 
         return selected
@@ -90,7 +88,6 @@ def main():
     print(f"--- DEBUG: SEARCHING FOR MACROS ---")
     
     folders_with_json = []
-    # Find folders containing macros
     seen_folders = set()
     for p in search_root.rglob("*.json"):
         if "click_zones" in p.name.lower() or "output" in p.parts or p.name.startswith('.'):
@@ -125,7 +122,8 @@ def main():
             total_gaps = 0
             is_time_sensitive = "time sensitive" in str(folder_path).lower()
             
-            manifest_entry = [f"Version {number_to_letters(v)}:"]
+            # Temporary storage to track where files start/end before the final shift
+            file_segments = []
 
             for i, p_str in enumerate(selected_paths):
                 p = Path(p_str)
@@ -136,48 +134,57 @@ def main():
                 base_t = min(t_vals) if t_vals else 0
                 dur = (max(t_vals) - base_t) if t_vals else 0
                 
-                # Inter-file gap
                 gap = rng.randint(500, 2500) if i > 0 else 0
                 timeline_ms += gap
                 total_gaps += gap
                 
-                # Calculate AFK contribution
-                if "screensharelink" not in p.name.lower():
-                    # Random human "thinking" time pool
-                    pct = rng.choice([0, 0, 0, 0.12, 0.20, 0.28])
-                    accumulated_afk += int(dur * pct)
-
+                start_in_merge = len(merged_events)
                 for e in raw:
                     ne = deepcopy(e)
                     ne["Time"] = (int(e.get("Time", 0)) - base_t) + timeline_ms
                     merged_events.append(ne)
+                end_in_merge = len(merged_events) - 1
+                
+                # Keep track of the index range of this file in the merged list
+                file_segments.append({
+                    "name": p.name,
+                    "start_idx": start_in_merge,
+                    "end_idx": end_in_merge
+                })
+                
+                if "screensharelink" not in p.name.lower():
+                    pct = rng.choice([0, 0, 0, 0.12, 0.20, 0.28])
+                    accumulated_afk += int(dur * pct)
                 
                 timeline_ms = merged_events[-1]["Time"]
-                manifest_entry.append(f"  - {p.name} (Ends at {format_ms_precise(timeline_ms)})")
 
-            # Apply AFK Pool
+            # Apply AFK Pool and identify where the shift happens
+            shift_idx = len(merged_events) # Default to end (Time Sensitive)
             if accumulated_afk > 0:
-                if is_time_sensitive:
-                    merged_events[-1]["Time"] += accumulated_afk
-                else:
-                    split_idx = rng.randint(1, len(merged_events) - 1)
-                    for k in range(split_idx, len(merged_events)):
-                        merged_events[k]["Time"] += accumulated_afk
+                if not is_time_sensitive:
+                    shift_idx = rng.randint(1, len(merged_events) - 1)
+                
+                for k in range(shift_idx, len(merged_events)):
+                    merged_events[k]["Time"] += accumulated_afk
+
+            # Generate manifest entries based on FINAL shifted times
+            manifest_entry = [f"Version {number_to_letters(v)}:"]
+            for seg in file_segments:
+                # The accurate end time is the timestamp of the last event of that segment
+                actual_end_time = merged_events[seg["end_idx"]]["Time"]
+                manifest_entry.append(f"  - {seg['name']} (Ends at {format_ms_precise(actual_end_time)})")
 
             final_dur = merged_events[-1]["Time"]
             v_code = number_to_letters(v)
             fname = f"{v_code}_{int(final_dur / 60000)}m.json"
             
-            # Save Macro
             (out_folder / fname).write_text(json.dumps(merged_events, indent=2))
             
-            # Add to folder manifest
             manifest_entry.append(f"  TOTAL DURATION: {format_ms_precise(final_dur)}")
             manifest_entry.append(f"  HUMANIZATION ADDED (AFK/Gaps): {format_ms_precise(accumulated_afk + total_gaps)}")
             manifest_entry.append("-" * 20)
             folder_manifest.append("\n".join(manifest_entry))
 
-        # Save manifest for this group
         (out_folder / "manifest.txt").write_text("\n\n".join(folder_manifest))
         print(f"Processed folder: {rel_path}")
 
