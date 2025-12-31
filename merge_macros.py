@@ -267,8 +267,6 @@ def main():
                 for j in range(split + 1, len(merged)): merged[j]["Time"] += p_ms
                 timeline = merged[-1]["Time"]
                 massive_pause_info = f"Massive P1: {format_ms_precise(p_ms)}"  # ✅ Track massive pause
-            else:
-                massive_pause_info = None
 
             fname = f"{'¬¬¬' if is_inef else ''}{v_code}_{int(timeline/60000)}m.json"
             (out_f / fname).write_text(json.dumps(merged, indent=2))
