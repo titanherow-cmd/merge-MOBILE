@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 """
-merge_macros.py - STABLE RESTORE POINT (v3.1.0) - OPTIMIZED
+merge_macros.py - STABLE RESTORE POINT (v3.2.0) - COMPLETE FIX
 - FEATURE: Random 0-1500ms jitter rolled individually BEFORE every action.
-- FEATURE: Pre-Action Mouse Jitter. If delay > 100ms, injects a micro-move
-           within a 5px radius that resolves before the click.
-- FIX: Exact original directory structure is preserved.
+- FEATURE: Pre-Action Mouse Jitter. If delay > 100ms, injects a micro-move.
 - FIX: Naming scheme A1, B1, C1... with folder numbering (1-Folder).
-- FIX: Z +100 scoped to parent directory only (Desktop's Z +100 only affects Desktop).
-- FIX: Jitter is now individual per event (non-cumulative).
-- OPTIMIZED: Cached file durations, single os.walk(), shallow copy for events.
-- Massive Pause: One random event injection per inefficient file (300s-720s).
-- Identity Engine: Robust regex for " - Copy" and "Z_" variation pooling.
-- Manifest: Named '!_MANIFEST_#_!' with folder number.
+- FIX: Z +100 scoped to parent directory only.
+- FIX: Jitter is individual per event (non-cumulative).
+- FIX: All variables properly initialized.
+- OPTIMIZED: Cached durations, single os.walk(), shallow copy.
 """
 
 import argparse, json, random, re, sys, os, math, shutil
 from pathlib import Path
-from copy import deepcopy
 
 def load_json_events(path: Path):
     try:
@@ -36,7 +31,7 @@ def load_json_events(path: Path):
         for e in events:
             if isinstance(e, list) and len(e) > 0: e = e[0]
             if isinstance(e, dict) and "Time" in e: cleaned.append(e)
-        return cleaned  # Don't deepcopy here, we'll do shallow copy later
+        return cleaned
     except Exception:
         return []
 
@@ -80,7 +75,6 @@ class QueueFileSelector:
             elif self.ineff_pool and not strictly_eff: pick = self.ineff_pool.pop(0)
             else: break
             seq.append(pick)
-            # ✅ OPTIMIZED: Use cached duration instead of loading file
             cur_ms += (self.durations.get(pick, 2000) + 1500)
             if len(seq) > 1000: break
         return seq
@@ -91,7 +85,7 @@ def main():
     parser.add_argument("output_root", type=Path)
     parser.add_argument("--versions", type=int, default=6)
     parser.add_argument("--target-minutes", type=int, default=35)
-    parser.add_argument("--delay-before-action-ms", type=int, default=1500) 
+    parser.add_argument("--delay-before-action-ms", type=int, default=1500)
     parser.add_argument("--bundle-id", type=int, required=True)
     parser.add_argument("--speed-range", type=str, default="1.0 1.0")
     args = parser.parse_args()
@@ -114,22 +108,18 @@ def main():
     bundle_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random()
     pools = {}
-    z_storage = {}  # ✅ NEW: Store Z +100 folders separately
-    durations_cache = {}  # ✅ OPTIMIZED: Cache file durations
+    z_storage = {}
+    durations_cache = {}
 
-    # ✅ OPTIMIZED: Single os.walk() pass for both discovery and Z +100
     for root, dirs, files in os.walk(originals_root):
         curr = Path(root)
         if any(p in curr.parts for p in [".git", ".github", "output"]): continue
         jsons = [f for f in files if f.endswith(".json") and "click_zones" not in f.lower()]
         if not jsons: continue
         
-        # Check if this is inside Z +100
         is_z_storage = "z +100" in str(curr).lower()
         
         if is_z_storage:
-            # ✅ FIX: Store Z +100 files with their parent scope
-            # Find parent directory (Desktop - OSRS or Mobile - OSRS)
             parent_scope = None
             for part in curr.parts:
                 if "desktop" in part.lower() or "mobile" in part.lower():
@@ -138,8 +128,6 @@ def main():
             
             if parent_scope:
                 macro_id = clean_identity(curr.name)
-                rel_from_z = curr.relative_to(curr.parent)  # Get path inside Z +100
-                
                 key = (parent_scope, macro_id)
                 if key not in z_storage:
                     z_storage[key] = []
@@ -147,14 +135,11 @@ def main():
                 for f in jsons:
                     file_path = curr / f
                     z_storage[key].append(file_path)
-                    # ✅ OPTIMIZED: Cache duration during discovery
                     durations_cache[file_path] = get_file_duration_ms(file_path)
         else:
-            # Regular folder - create pool
             macro_id = clean_identity(curr.name)
             rel_path = curr.relative_to(originals_root)
             
-            # Find parent scope for this folder
             parent_scope = None
             for part in curr.parts:
                 if "desktop" in part.lower() or "mobile" in part.lower():
@@ -174,11 +159,9 @@ def main():
                     "parent_scope": parent_scope
                 }
                 
-                # ✅ OPTIMIZED: Cache durations during discovery
                 for fp in file_paths:
                     durations_cache[fp] = get_file_duration_ms(fp)
 
-    # ✅ FIX: Inject Z +100 files into matching pools (scoped by parent)
     for pool_key, pool_data in pools.items():
         parent_scope = pool_data["parent_scope"]
         macro_id = pool_data["macro_id"]
@@ -187,15 +170,12 @@ def main():
         if z_key in z_storage:
             pool_data["files"].extend(z_storage[z_key])
 
-    # 3. Merging Logic
-    # ✅ NEW: Sort pools alphabetically and assign folder numbers
     sorted_pool_keys = sorted(pools.keys())
     folder_numbers = {key: idx + 1 for idx, key in enumerate(sorted_pool_keys)}
     
     for key, data in pools.items():
         folder_number = folder_numbers[key]
         
-        # ✅ NEW: Prefix folder name with number (e.g., "1-Mining")
         original_rel_path = data["rel_path"]
         folder_name = original_rel_path.name
         parent_path = original_rel_path.parent
@@ -205,7 +185,6 @@ def main():
         out_f = bundle_dir / numbered_rel_path
         out_f.mkdir(parents=True, exist_ok=True)
         
-        # ✅ NEW: Manifest header with total files available
         manifest = [
             f"MANIFEST FOR FOLDER: {numbered_rel_path}",
             "=" * 40,
@@ -226,8 +205,18 @@ def main():
             elif is_inef: mult = rng.choices([1, 2, 3], weights=[20, 40, 40], k=1)[0]
             else: mult = rng.choices([1, 2, 3], weights=[50, 30, 20], k=1)[0]
             
+            total_jitter_ms = 0
+            total_gaps = 0
+            total_afk_pool = 0
+            file_segments = []
+            massive_pause_info = None
+            merged = []
+            timeline = 0
+            
             paths = QueueFileSelector(rng, data["files"], durations_cache).get_sequence(args.target_minutes, is_inef, data["is_ts"])
-            merged, timeline = [], 0
+            
+            if not paths:
+                continue
             
             for i, p in enumerate(paths):
                 raw = load_json_events(p)
@@ -237,36 +226,42 @@ def main():
                 
                 gap = int(rng.randint(500, 2500) * mult) if i > 0 else 0
                 timeline += gap
+                total_gaps += gap
+                
+                file_jitter_for_this_file = 0
                 
                 for e_idx, e in enumerate(raw):
                     rel_offset = int(int(e["Time"]) - base_t)
                     jitter = rng.randint(0, args.delay_before_action_ms)
+                    file_jitter_for_this_file += jitter
                     
-                    # --- MOUSE JITTER INJECTION ---
                     if jitter > 100 and "X" in e and "Y" in e and e["X"] is not None and e["Y"] is not None:
-                        # ✅ OPTIMIZED: Shallow copy (10x faster)
                         jitter_event = {**e}
                         jitter_event["X"] = int(e["X"]) + rng.randint(-5, 5)
                         jitter_event["Y"] = int(e["Y"]) + rng.randint(-5, 5)
                         jitter_event["Type"] = "Move"
-                        # ✅ FIX: Individual jitter (not cumulative)
                         jitter_event["Time"] = timeline + rel_offset + (jitter // 2)
                         merged.append(jitter_event)
 
-                    # ✅ FIX: Individual jitter - each event gets its own delay
-                    # ✅ OPTIMIZED: Shallow copy instead of deepcopy
                     ne = {**e}
                     ne["Time"] = timeline + rel_offset + jitter
                     merged.append(ne)
                 
+                total_jitter_ms += file_jitter_for_this_file
                 timeline = merged[-1]["Time"]
+                file_segments.append({"name": p.name, "end_time": timeline})
             
-            # ✅ FIXED: Calculate totals AFTER the loop completes
+            if is_inef and not data["is_ts"] and len(merged) > 1:
+                p_ms = rng.randint(300000, 720000)
+                split = rng.randint(0, len(merged) - 2)
+                for j in range(split + 1, len(merged)): merged[j]["Time"] += p_ms
+                timeline = merged[-1]["Time"]
+                massive_pause_info = f"Massive P1: {format_ms_precise(p_ms)}"
+            
             fname = f"{'¬¬¬' if is_inef else ''}{v_code}_{int(timeline/60000)}m.json"
             (out_f / fname).write_text(json.dumps(merged, indent=2))
             
-            # Now calculate total_pause using the accumulated values
-            total_pause = total_gaps + total_afk_pool  # ✅ Variables are now defined
+            total_pause = total_gaps + total_afk_pool
             if massive_pause_info:
                 version_label = f"Version {v_code} [EXTRA - INEFFICIENT] (Multiplier: x{mult}):"
             else:
@@ -275,7 +270,7 @@ def main():
             manifest_entry = [
                 version_label,
                 f"  TOTAL DURATION: {format_ms_precise(timeline)}",
-                f"  Total Jitter Added: {format_ms_precise(total_jitter_ms)}",  # ✅ Separate entry
+                f"  Total Jitter Added: {format_ms_precise(total_jitter_ms)}",
                 f"  total PAUSE: {format_ms_precise(total_pause)} +BREAKDOWN:",
                 f"    - Inter-file Gaps: {format_ms_precise(total_gaps)}",
                 f"    - AFK Pool: {format_ms_precise(total_afk_pool)}"
@@ -284,9 +279,8 @@ def main():
             if massive_pause_info:
                 manifest_entry.append(f"    - {massive_pause_info}")
             
-            manifest_entry.append("")  # Blank line
+            manifest_entry.append("")
             
-            # ✅ NEW: List files with end times
             for idx, seg in enumerate(file_segments):
                 bullet = "*" if idx < 11 else "-"
                 manifest_entry.append(f"  {bullet} {seg['name']} (Ends at {format_ms_precise(seg['end_time'])})")
@@ -294,7 +288,6 @@ def main():
             manifest_entry.append("-" * 30)
             manifest.append("\n".join(manifest_entry))
 
-        # ✅ NEW: Write manifest with proper formatting
         (out_f / f"!_MANIFEST_{folder_number}_!").write_text("\n".join(manifest))
 
 if __name__ == "__main__":
