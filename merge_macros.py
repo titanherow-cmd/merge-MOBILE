@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-merge_macros.py - STABLE RESTORE POINT (v3.2.0) - COMPLETE FIX
+merge_macros.py - STABLE RESTORE POINT (v3.2.1) - DRAG FIX
 - FEATURE: Random 0-1500ms jitter rolled individually BEFORE every action.
 - FEATURE: Pre-Action Mouse Jitter. If delay > 100ms, injects a micro-move.
+- FIX: Idle mouse movements now SKIP drag sequences (DragStart to DragEnd)
 - FIX: Naming scheme A1, B1, C1... with folder numbering (1-Folder).
 - FIX: Z +100 scoped to parent directory only.
 - FIX: Jitter is individual per event (non-cumulative).
@@ -61,12 +62,45 @@ def extract_folder_number(folder_name: str) -> int:
         return int(match.group(1))
     return 0
 
+def is_in_drag_sequence(events, index):
+    """
+    Check if the given index is inside a drag sequence (between DragStart and DragEnd).
+    Returns True if we're in the middle of a drag.
+    """
+    # Look backwards to find the most recent DragStart or DragEnd
+    drag_started = False
+    for j in range(index, -1, -1):
+        event_type = events[j].get("Type", "")
+        if event_type == "DragEnd":
+            # Found a DragEnd before DragStart, so we're not in a drag
+            return False
+        elif event_type == "DragStart":
+            # Found a DragStart, now check if there's a DragEnd after current index
+            drag_started = True
+            break
+    
+    if not drag_started:
+        return False
+    
+    # Now look forward to see if there's a DragEnd
+    for j in range(index + 1, len(events)):
+        event_type = events[j].get("Type", "")
+        if event_type == "DragEnd":
+            # We're between DragStart and DragEnd
+            return True
+        elif event_type == "DragStart":
+            # Another DragStart before DragEnd? Shouldn't happen but means not in drag
+            return False
+    
+    return False
+
 def insert_idle_mouse_movements(events, rng, movement_percentage):
     """
     Insert realistic mouse movements during idle periods (gaps > 5 seconds).
     
     Rules:
     - Only in gaps >= 5000ms
+    - SKIP gaps that are inside drag sequences (DragStart to DragEnd)
     - Use middle 40-50% of gap (25% buffer on each side)
     - Smooth curved paths + random wandering
     - Movements every ~500ms during active window
@@ -88,6 +122,10 @@ def insert_idle_mouse_movements(events, rng, movement_percentage):
             
             # Only process gaps >= 5 seconds
             if gap >= 5000:
+                # ✅ NEW: Check if we're in a drag sequence - if so, SKIP idle movements
+                if is_in_drag_sequence(events, i):
+                    continue
+                
                 # Calculate active window (middle 40-50% of gap)
                 active_duration = int(gap * movement_percentage)
                 buffer_start = (gap - active_duration) // 2
