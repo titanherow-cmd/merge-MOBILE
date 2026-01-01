@@ -1,25 +1,4 @@
-name: Merge macros (Fixed Path Discovery)
-
-on:
-workflow_dispatch:
-inputs:
-versions:
-description: 'How many versions per group'
-required: true
-default: '6'
-target_minutes:
-description: 'Target duration per merged file'
-required: true
-default: '35'
-
-permissions:
-contents: write
-
-jobs:
-merge:
-runs-on: ubuntu-latest
-
-steps:
+name: Merge macros (Fixed Path Discovery)on:workflow_dispatch:inputs:versions:description: 'How many versions per group'required: truedefault: '6'target_minutes:description: 'Target duration per merged file'required: truedefault: '35'permissions:contents: writejobs:merge:runs-on: ubuntu-lateststeps:
   - uses: actions/checkout@v4
     with:
       fetch-depth: 0
