@@ -186,6 +186,14 @@ def main():
             
     if not originals_root:
         originals_root = search_base
+    
+    # ✅ NEW: Look for logout.json in multiple locations
+    logout_file = None
+    for location in [originals_root / "logout.json", originals_root.parent / "logout.json", search_base / "logout.json"]:
+        if location.exists() and location.is_file():
+            logout_file = location
+            print(f"Found logout.json at: {logout_file}")
+            break
 
     bundle_dir = args.output_root / f"merged_bundle_{args.bundle_id}"
     bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -273,15 +281,27 @@ def main():
         data["folder_number"] = folder_number
     
     for key, data in pools.items():
-        folder_number = data["folder_number"]  # ✅ Use extracted number from folder name
+        folder_number = data["folder_number"]  # Use extracted number from folder name
         
-        # ✅ FIX #3: Don't add number prefix - folder already has it
+        # ✅ FIX: Skip folders with 0 mergeable files
+        if not data["files"]:
+            print(f"Skipping folder (0 files): {data['rel_path']}")
+            continue
+        
         original_rel_path = data["rel_path"]
         
         out_f = bundle_dir / original_rel_path  # Use folder as-is
         out_f.mkdir(parents=True, exist_ok=True)
         
-        # ✅ FIX #3: Copy "always first/last" files unmodified
+        # ✅ NEW: Copy logout.json to this folder
+        if logout_file:
+            try:
+                shutil.copy2(logout_file, out_f / "logout.json")
+                print(f"  ✓ Copied logout.json to {original_rel_path}")
+            except Exception as e:
+                print(f"  ✗ Error copying logout.json: {e}")
+        
+        # Copy "always first/last" files unmodified
         if "always_files" in data:
             for always_file in data["always_files"]:
                 try:
