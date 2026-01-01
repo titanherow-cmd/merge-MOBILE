@@ -51,6 +51,80 @@ def format_ms_precise(ms: int) -> str:
 def clean_identity(name: str) -> str:
     return re.sub(r'(\s*-\s*Copy(\s*\(\d+\))?)|(\s*\(\d+\))', '', name, flags=re.IGNORECASE).strip().lower()
 
+def insert_idle_mouse_movements(events, rng, movement_percentage):
+    """
+    Insert realistic mouse movements during idle periods (gaps > 5 seconds).
+    
+    Rules:
+    - Only in gaps >= 5000ms
+    - Use middle 40-50% of gap (25% buffer on each side)
+    - Smooth curved paths + random wandering
+    - Movements every ~500ms during active window
+    """
+    if not events or len(events) < 2:
+        return events
+    
+    result = []
+    total_idle_time = 0
+    
+    for i in range(len(events)):
+        result.append(events[i])
+        
+        # Check gap to next event
+        if i < len(events) - 1:
+            current_time = int(events[i].get("Time", 0))
+            next_time = int(events[i + 1].get("Time", 0))
+            gap = next_time - current_time
+            
+            # Only process gaps >= 5 seconds
+            if gap >= 5000:
+                # Calculate active window (middle 40-50% of gap)
+                active_duration = int(gap * movement_percentage)
+                buffer_start = (gap - active_duration) // 2
+                
+                movement_start = current_time + buffer_start
+                movement_end = movement_start + active_duration
+                
+                # Get last known position (if available)
+                last_x = events[i].get("X", 500)
+                last_y = events[i].get("Y", 500)
+                
+                # Generate smooth movements every ~500ms
+                num_moves = max(1, active_duration // 500)
+                
+                for move_idx in range(num_moves):
+                    t = move_idx / num_moves
+                    move_time = int(movement_start + (active_duration * t))
+                    
+                    # Mix of smooth curves and random wandering
+                    if rng.random() < 0.5:
+                        # Smooth curved path
+                        radius = rng.randint(50, 150)
+                        angle = t * math.pi * 2 + rng.uniform(0, math.pi)
+                        new_x = int(last_x + math.cos(angle) * radius)
+                        new_y = int(last_y + math.sin(angle) * radius)
+                    else:
+                        # Random wandering
+                        new_x = last_x + rng.randint(-100, 100)
+                        new_y = last_y + rng.randint(-100, 100)
+                    
+                    # Keep within reasonable bounds
+                    new_x = max(100, min(1800, new_x))
+                    new_y = max(100, min(1000, new_y))
+                    
+                    move_event = {
+                        "Time": move_time,
+                        "Type": "MouseMove",
+                        "X": new_x,
+                        "Y": new_y
+                    }
+                    result.append(move_event)
+                    last_x, last_y = new_x, new_y
+                
+                total_idle_time += active_duration
+    
+    return result, total_idle_time
+
 class QueueFileSelector:
     def __init__(self, rng, all_files, durations_cache):
         self.rng = rng
@@ -85,7 +159,6 @@ def main():
     parser.add_argument("output_root", type=Path)
     parser.add_argument("--versions", type=int, default=6)
     parser.add_argument("--target-minutes", type=int, default=35)
-    parser.add_argument("--delay-before-action-ms", type=int, default=1500)
     parser.add_argument("--bundle-id", type=int, required=True)
     parser.add_argument("--speed-range", type=str, default="1.0 1.0")
     args = parser.parse_args()
@@ -222,7 +295,10 @@ def main():
             elif is_inef: mult = rng.choices([1, 2, 3], weights=[20, 40, 40], k=1)[0]
             else: mult = rng.choices([1, 2, 3], weights=[50, 30, 20], k=1)[0]
             
-            total_jitter_ms = 0
+            # ✅ NEW: Random movement percentage per version (40-50%)
+            movement_percentage = rng.uniform(0.40, 0.50)
+            
+            total_idle_movements = 0
             total_gaps = 0
             total_afk_pool = 0
             file_segments = []
@@ -238,38 +314,24 @@ def main():
             for i, p in enumerate(paths):
                 raw = load_json_events(p)
                 if not raw: continue
-                t_vals = [int(e["Time"]) for e in raw]
+                
+                # ✅ NEW: Insert idle mouse movements in this file's events
+                raw_with_movements, idle_time = insert_idle_mouse_movements(raw, rng, movement_percentage)
+                total_idle_movements += idle_time
+                
+                t_vals = [int(e["Time"]) for e in raw_with_movements]
                 base_t = min(t_vals)
                 
                 gap = int(rng.randint(500, 2500) * mult) if i > 0 else 0
                 timeline += gap
                 total_gaps += gap
                 
-                # ✅ FIX #4: Track actual max jitter per file (not cumulative sum)
-                max_jitter_this_file = 0
-                
-                for e_idx, e in enumerate(raw):
-                    rel_offset = int(int(e["Time"]) - base_t)
-                    jitter = rng.randint(0, args.delay_before_action_ms)
-                    
-                    # Track the maximum jitter (actual time added to file)
-                    if jitter > max_jitter_this_file:
-                        max_jitter_this_file = jitter
-                    
-                    if jitter > 100 and "X" in e and "Y" in e and e["X"] is not None and e["Y"] is not None:
-                        jitter_event = {**e}
-                        jitter_event["X"] = int(e["X"]) + rng.randint(-5, 5)
-                        jitter_event["Y"] = int(e["Y"]) + rng.randint(-5, 5)
-                        jitter_event["Type"] = "Move"
-                        jitter_event["Time"] = timeline + rel_offset + (jitter // 2)
-                        merged.append(jitter_event)
-
+                for e in raw_with_movements:
                     ne = {**e}
-                    ne["Time"] = timeline + rel_offset + jitter
+                    rel_offset = int(int(e["Time"]) - base_t)
+                    ne["Time"] = timeline + rel_offset
                     merged.append(ne)
                 
-                # ✅ FIX #4: Only add the max jitter (realistic time added)
-                total_jitter_ms += max_jitter_this_file
                 timeline = merged[-1]["Time"]
                 file_segments.append({"name": p.name, "end_time": timeline})
             
@@ -292,7 +354,7 @@ def main():
             manifest_entry = [
                 version_label,
                 f"  TOTAL DURATION: {format_ms_precise(timeline)}",
-                f"  Total Jitter Added: {format_ms_precise(total_jitter_ms)}",
+                f"  Idle Mouse Movements: {format_ms_precise(total_idle_movements)} ({int(movement_percentage*100)}% of idle time)",
                 f"  total PAUSE: {format_ms_precise(total_pause)} +BREAKDOWN:",
                 f"    - Inter-file Gaps: {format_ms_precise(total_gaps)}",
                 f"    - AFK Pool: {format_ms_precise(total_afk_pool)}"
