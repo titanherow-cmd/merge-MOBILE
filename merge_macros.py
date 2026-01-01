@@ -169,6 +169,14 @@ def main():
         z_key = (parent_scope, macro_id)
         if z_key in z_storage:
             pool_data["files"].extend(z_storage[z_key])
+    
+    # ✅ FIX #3: Filter out "always first" and "always last" files from merging
+    for pool_key, pool_data in pools.items():
+        all_files = pool_data["files"]
+        always_files = [f for f in all_files if Path(f).name.lower().startswith(("always first", "always last", "-always first", "-always last"))]
+        mergeable_files = [f for f in all_files if f not in always_files]
+        pool_data["files"] = mergeable_files
+        pool_data["always_files"] = always_files
 
     sorted_pool_keys = sorted(pools.keys())
     folder_numbers = {key: idx + 1 for idx, key in enumerate(sorted_pool_keys)}
@@ -184,6 +192,15 @@ def main():
         
         out_f = bundle_dir / numbered_rel_path
         out_f.mkdir(parents=True, exist_ok=True)
+        
+        # ✅ FIX #3: Copy "always first/last" files unmodified
+        if "always_files" in data:
+            for always_file in data["always_files"]:
+                try:
+                    shutil.copy2(always_file, out_f / Path(always_file).name)
+                    print(f"  ✓ Copied unmodified: {Path(always_file).name}")
+                except Exception as e:
+                    print(f"  ✗ Error copying {Path(always_file).name}: {e}")
         
         manifest = [
             f"MANIFEST FOR FOLDER: {numbered_rel_path}",
@@ -228,12 +245,16 @@ def main():
                 timeline += gap
                 total_gaps += gap
                 
-                file_jitter_for_this_file = 0
+                # ✅ FIX #4: Track actual max jitter per file (not cumulative sum)
+                max_jitter_this_file = 0
                 
                 for e_idx, e in enumerate(raw):
                     rel_offset = int(int(e["Time"]) - base_t)
                     jitter = rng.randint(0, args.delay_before_action_ms)
-                    file_jitter_for_this_file += jitter
+                    
+                    # Track the maximum jitter (actual time added to file)
+                    if jitter > max_jitter_this_file:
+                        max_jitter_this_file = jitter
                     
                     if jitter > 100 and "X" in e and "Y" in e and e["X"] is not None and e["Y"] is not None:
                         jitter_event = {**e}
@@ -247,7 +268,8 @@ def main():
                     ne["Time"] = timeline + rel_offset + jitter
                     merged.append(ne)
                 
-                total_jitter_ms += file_jitter_for_this_file
+                # ✅ FIX #4: Only add the max jitter (realistic time added)
+                total_jitter_ms += max_jitter_this_file
                 timeline = merged[-1]["Time"]
                 file_segments.append({"name": p.name, "end_time": timeline})
             
