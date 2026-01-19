@@ -726,6 +726,16 @@ def main():
                 for j in range(split + 1, len(merged)): merged[j]["Time"] += p_ms
                 timeline = merged[-1]["Time"]
                 massive_pause_info = f"Massive P1: {format_ms_precise(p_ms)}"
+                
+                # ✅ FIX: Update file segment end times AFTER massive pause
+                # Find which file the split happened in and update all segments after it
+                accumulated_time = 0
+                for seg_idx, seg in enumerate(file_segments):
+                    if seg["end_time"] > merged[split]["Time"]:
+                        # This segment and all after it are affected by the massive pause
+                        for update_idx in range(seg_idx, len(file_segments)):
+                            file_segments[update_idx]["end_time"] += p_ms
+                        break
             
             fname = f"{'¬¬¬' if is_inef else ''}{v_code}_{int(timeline/60000)}m.json"
             (out_f / fname).write_text(json.dumps(merged, indent=2))
